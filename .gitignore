@@ -1,0 +1,13 @@
+# Python / MicroPython
+__pycache__/
+*.pyc
+*.mpy
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editores
+.idea/
+*.swp

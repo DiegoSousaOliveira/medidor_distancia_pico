@@ -1,0 +1,1235 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Sensor de Ré · Painel</title>
+<!--
+  Painel do Sensor de Ré no computador, por Bluetooth Low Energy.
+
+  COMO USAR
+    1. Ligue a BitDogLab (pode ser na bateria, sem cabo).
+    2. Abra este arquivo no Google Chrome ou no Microsoft Edge
+       (o Firefox não tem Web Bluetooth).
+    3. Clique em "Conectar" e escolha "SensorDeRe-XXXX" na lista.
+
+  ATALHOS NA URL
+    painel.html?simular=1        já abre simulando (sem placa)
+    painel.html?apresentacao=1   já abre no modo apresentação
+
+  A placa NÃO manda a imagem da tela: manda só o ESTADO (11 bytes —
+  distância, zona, proximidade, mudo...). Esta página desenha a tela com
+  o mesmo código, a mesma fonte e os mesmos ícones do OLED (é um "porte"
+  de lib/display.py), por isso a imagem sai idêntica, pixel a pixel.
+  Tudo funciona sem internet: nenhuma fonte ou biblioteca externa.
+-->
+<style>
+  /* ================================================================ tokens */
+  :root {
+    --bg: #07090d;
+    --bg-2: #0b0f15;
+    --surface: #10151d;
+    --surface-2: #141a23;
+    --line: rgba(255, 255, 255, .07);
+    --line-2: rgba(255, 255, 255, .12);
+    --text: #e8edf3;
+    --text-2: #a3afbf;
+    --text-3: #6b7788;
+    --accent: #38bdf8;
+    --accent-ink: #03141f;
+    --z-livre: #22c55e;
+    --z-atencao: #facc15;
+    --z-perigo: #fb923c;
+    --z-pare: #ef4444;
+    --zona: var(--accent);          /* muda com a zona atual (JS) */
+    --raio: 18px;
+    --raio-sm: 12px;
+    --sombra: 0 1px 0 rgba(255,255,255,.04) inset, 0 20px 40px -24px rgba(0,0,0,.8);
+    --fonte: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+    --fonte-display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, color-mix(in srgb, var(--zona) 10%, transparent), transparent 60%),
+      radial-gradient(900px 500px at -10% 0%, rgba(56, 189, 248, .06), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font: 15px/1.5 var(--fonte);
+    -webkit-font-smoothing: antialiased;
+    transition: background-color .4s;
+  }
+  button, select, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* ================================================================ topo */
+  .topo {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px clamp(16px, 3vw, 32px);
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter: blur(14px) saturate(140%);
+    border-bottom: 1px solid var(--line);
+  }
+  .marca { display: flex; align-items: center; gap: 12px; margin-right: auto; min-width: 0; }
+  .marca-icone {
+    width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; flex: none;
+    background: linear-gradient(145deg, #18212d, #0d1218);
+    border: 1px solid var(--line-2);
+    box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 8px 20px -10px var(--zona);
+  }
+  .marca-icone svg { width: 22px; height: 22px; color: var(--zona); transition: color .3s; }
+  .marca h1 { margin: 0; font: 600 17px/1.2 var(--fonte-display); letter-spacing: .2px; }
+  .marca p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .status {
+    display: inline-flex; align-items: center; gap: 10px; height: 38px; padding: 0 14px 0 12px;
+    border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface);
+    font-size: 13.5px; color: var(--text-2); white-space: nowrap;
+  }
+  .status-ponto { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); position: relative; }
+  .status[data-estado="ok"] .status-ponto { background: var(--z-livre); }
+  .status[data-estado="ok"] .status-ponto::after,
+  .status[data-estado="espera"] .status-ponto::after {
+    content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid currentColor;
+    color: inherit; animation: pulso 1.6s ease-out infinite; opacity: 0;
+  }
+  .status[data-estado="ok"] .status-ponto::after { color: var(--z-livre); }
+  .status[data-estado="espera"] .status-ponto { background: var(--z-atencao); }
+  .status[data-estado="espera"] .status-ponto::after { color: var(--z-atencao); }
+  .status[data-estado="erro"] .status-ponto { background: var(--z-pare); }
+  .status b { color: var(--text); font-weight: 600; }
+  @keyframes pulso { 0% { transform: scale(.6); opacity: .8; } 100% { transform: scale(1.8); opacity: 0; } }
+
+  .acoes { display: flex; gap: 8px; }
+  .botao {
+    display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 16px;
+    border-radius: 11px; border: 1px solid var(--line-2); background: var(--surface-2);
+    font-weight: 600; font-size: 14px; cursor: pointer; white-space: nowrap;
+    transition: background .15s, border-color .15s, transform .05s;
+  }
+  .botao:hover { background: #1a2230; border-color: rgba(255,255,255,.2); }
+  .botao:active { transform: translateY(1px); }
+  .botao svg { width: 17px; height: 17px; flex: none; }
+  .botao.primario {
+    background: linear-gradient(180deg, #5cccfb, var(--accent)); color: var(--accent-ink);
+    border-color: transparent; box-shadow: 0 8px 22px -10px var(--accent);
+  }
+  .botao.primario:hover { background: linear-gradient(180deg, #7dd6fc, #4fc3f7); }
+  .botao.quadrado { width: 38px; padding: 0; justify-content: center; }
+
+  /* ============================================================ layout */
+  main {
+    display: grid; gap: 20px; align-items: start;
+    grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
+    max-width: 1320px; margin: 0 auto; padding: 24px clamp(16px, 3vw, 32px) 40px;
+  }
+  .coluna { display: grid; gap: 20px; min-width: 0; }
+  @media (max-width: 980px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+  .cartao {
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    border: 1px solid var(--line); border-radius: var(--raio); box-shadow: var(--sombra);
+    padding: 18px 20px 20px; min-width: 0;
+  }
+  .cartao-topo { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  .rotulo {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase; color: var(--text-3);
+  }
+  .rotulo svg { width: 15px; height: 15px; }
+  .dica { font-size: 12.5px; color: var(--text-3); }
+
+  /* ======================================================== display (estilo v4) */
+  .aparelho {
+    position: relative; padding: 14px; border-radius: 14px;
+    background: #16181c; border: 1px solid rgba(255, 255, 255, .08);
+    box-shadow: 0 40px 80px -40px rgba(0, 0, 0, .9);
+  }
+  .tela { border-radius: 6px; overflow: hidden; background: #000; padding: clamp(8px, 1.4vw, 16px); }
+  canvas#oled {
+    display: block; width: 100%; height: auto; image-rendering: pixelated;
+    filter: drop-shadow(0 0 5px var(--brilho-oled, rgba(127, 208, 255, .45)));
+  }
+  .aparelho-pe {
+    display: flex; justify-content: space-between; align-items: center; padding: 12px 2px 0;
+    font: 400 11.5px/1 var(--mono); color: var(--text-3);
+  }
+  .aparelho-pe i { display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: #26292e; }
+  .conectado .aparelho-pe i { background: var(--zona); }
+
+  /* ======================================================== leitura (estilo v4) */
+  .leitura-modo { font-size: 13.5px; color: var(--text-2); }
+  .leitura-num { display: flex; align-items: baseline; gap: 12px; margin: 6px 0 4px; min-height: 1em; }
+  #leitura-valor {
+    font: 300 clamp(76px, 8vw, 128px)/.9 var(--fonte-display); letter-spacing: -.045em;
+    font-variant-numeric: tabular-nums;
+  }
+  #leitura-valor.sem-valor { color: var(--text-3); }
+  #leitura-unidade { font: 400 22px/1 var(--fonte-display); color: var(--text-2); }
+  #leitura-zona { font: 600 22px/1.2 var(--fonte-display); color: var(--zona); letter-spacing: -.01em; }
+  #leitura-sub { margin-top: 6px; min-height: 24px; color: var(--text-2); font-size: 15px; }
+
+  .regua { margin-top: 30px; }
+  .regua-faixa { display: flex; gap: 3px; height: 6px; }
+  .regua-faixa span { border-radius: 2px; opacity: .22; transition: opacity .25s, flex-basis .3s; }
+  .regua-faixa span.ativa { opacity: 1; }
+  #f-livre { background: var(--z-livre); }  #f-atencao { background: var(--z-atencao); }
+  #f-perigo { background: var(--z-perigo); } #f-pare { background: var(--z-pare); }
+  .regua-trilho { position: relative; height: 0; }
+  .marcador {
+    position: absolute; top: -14px; width: 2px; height: 20px; margin-left: -1px;
+    background: var(--text); border-radius: 1px; transition: opacity .3s;
+  }
+  .regua-escala { position: relative; height: 16px; margin-top: 10px; font: 400 11.5px/1 var(--mono); color: var(--text-3); }
+  .regua-escala span { position: absolute; transform: translateX(-50%); }
+  .regua-escala span:first-child { transform: none; }
+  .regua-escala span:last-child { transform: translateX(-100%); }
+
+  .metricas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+  .metrica { background: rgba(255,255,255,.025); border: 1px solid var(--line); border-radius: var(--raio-sm); padding: 10px 12px; }
+  .metrica dt { font-size: 11.5px; color: var(--text-3); letter-spacing: .3px; }
+  .metrica dd { margin: 3px 0 0; font: 600 17px/1.2 var(--fonte-display); font-variant-numeric: tabular-nums; }
+
+  /* ======================================================== histórico */
+  .grafico { position: relative; height: 190px; }
+  canvas#historico { width: 100%; height: 100%; display: block; }
+  .vazio {
+    position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+    color: var(--text-3); font-size: 13.5px; pointer-events: none;
+  }
+  .vazio[hidden] { display: none; }
+
+  /* ======================================================== luzes */
+  .luzes { display: grid; grid-template-columns: auto 1fr; gap: 22px; align-items: center; }
+  .placa-matriz {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 9px; padding: 14px; width: 172px;
+    border-radius: 14px; background: linear-gradient(160deg, #0f2a1d, #0a1d14);
+    border: 1px solid rgba(34,197,94,.12); box-shadow: inset 0 0 20px rgba(0,0,0,.6);
+  }
+  .placa-matriz i {
+    aspect-ratio: 1; border-radius: 5px; background: #0b1510;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+  }
+  /* LED RGB: um LED de 5 mm visto de cima, preso na placa (anel = corpo
+     do LED, centro = lente acesa). Nada de "botão" com brilho de vidro. */
+  .led-linha {
+    display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02);
+  }
+  .led-rgb {
+    position: relative; width: 16px; height: 16px; flex: none; border-radius: 50%;
+    background: #0a0d12; box-shadow: 0 0 0 3px #1c232d, 0 0 0 4px rgba(255,255,255,.06);
+  }
+  .led-rgb::after {
+    content: ""; position: absolute; inset: 3px; border-radius: 50%;
+    background: var(--cor-led, #232a34); box-shadow: 0 0 10px 2px var(--brilho-led, transparent);
+  }
+  .luzes-texto { line-height: 1.3; }
+  .luzes-texto small { display: block; font-size: 11.5px; color: var(--text-3); }
+  .luzes-texto b { font-size: 14px; font-weight: 600; }
+
+  /* ======================================================== conexão e preferências (estilo v4) */
+  .colunas {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-width: 1320px; margin: 0 auto; padding: 0 clamp(16px, 3vw, 32px);
+  }
+  .colunas > section { padding: 28px 32px 36px 0; border-top: 1px solid var(--line); }
+  .colunas > section + section { padding-left: 32px; border-left: 1px solid var(--line); }
+  @media (max-width: 760px) {
+    .colunas { grid-template-columns: minmax(0, 1fr); }
+    .colunas > section, .colunas > section + section { padding: 24px 0; border-left: 0; }
+  }
+  .colunas h2 { margin: 0 0 18px; font: 500 13px/1.3 var(--fonte); color: var(--text-2); }
+  dl.dados { margin: 0; display: grid; grid-template-columns: 1fr auto; row-gap: 10px; column-gap: 16px; font-size: 14px; }
+  dl.dados dt { color: var(--text-2); }
+  dl.dados dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .opcao { display: flex; justify-content: space-between; align-items: center; gap: 16px; font-size: 14px; }
+  .opcao + .opcao { margin-top: 16px; }
+  .opcao > span { color: var(--text-2); }
+  .chave { position: relative; width: 38px; height: 22px; flex: none; }
+  .chave input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+  .chave i { position: absolute; inset: 0; border-radius: 999px; background: #2a2d33; transition: background .15s; pointer-events: none; }
+  .chave i::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+    background: #9a9ea6; transition: transform .15s, background .15s;
+  }
+  .chave input:checked + i { background: #f2f2f4; }
+  .chave input:checked + i::after { transform: translateX(16px); background: #0b0c0e; }
+  .chave input:focus-visible + i { outline: 2px solid var(--text); outline-offset: 3px; }
+  .escolha { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; }
+  .escolha button { border: 0; background: none; padding: 5px 10px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+  .escolha button + button { border-left: 1px solid var(--line-2); }
+  .escolha button[aria-pressed="true"] { background: #f2f2f4; color: #0b0c0e; }
+
+  .aviso {
+    display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; padding: 12px 14px; border-radius: 12px;
+    background: rgba(250, 204, 21, .08); border: 1px solid rgba(250, 204, 21, .25); color: #fde68a; font-size: 13.5px;
+  }
+  .aviso[hidden] { display: none; }
+
+  footer { max-width: 1320px; margin: 0 auto; padding: 0 clamp(16px, 3vw, 32px) 40px; }
+  footer > div {
+    display: flex; justify-content: space-between; gap: 6px 16px; flex-wrap: wrap; padding-top: 22px;
+    border-top: 1px solid var(--line); font-size: 12.5px; color: var(--text-3);
+  }
+
+  /* ================================================== modo apresentação */
+  .sair-apresentacao { display: none; }
+  body.apresentacao .topo { position: fixed; inset: 0 0 auto 0; background: transparent; border: 0; backdrop-filter: none; }
+  body.apresentacao .topo > :not(.sair-apresentacao) { display: none; }
+  body.apresentacao .sair-apresentacao { display: inline-flex; margin-left: auto; opacity: .55; }
+  body.apresentacao .sair-apresentacao:hover { opacity: 1; }
+  body.apresentacao main { max-width: 1560px; min-height: 100vh; align-content: center; align-items: center; padding-top: 56px; }
+  body.apresentacao .so-normal, body.apresentacao footer, body.apresentacao .colunas { display: none; }
+  body.apresentacao #leitura-valor { font-size: clamp(110px, 12vw, 200px); }
+  body.apresentacao #leitura-zona { font-size: 32px; }
+  body.apresentacao #leitura-sub { font-size: 18px; }
+  body.apresentacao #cartao-telemetria { padding: 28px 30px 30px; }
+
+  @media (max-width: 640px) {
+    .acoes .texto-opcional { display: none; }
+    .cartao-topo .dica { display: none; }
+    .metricas { gap: 8px; }
+    .metrica { padding: 9px 10px; }
+    .luzes { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+    .led-linha { justify-content: center; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Ícones (SVG desenhados à mão, sem depender de internet) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-marca" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 15h10l2-4h3a2 2 0 0 1 2 2v2h1"/><circle cx="7" cy="17" r="2"/><circle cx="16" cy="17" r="2"/>
+    <path d="M4 9a9 9 0 0 1 3-4M2 6.5A12 12 0 0 1 4.5 3"/>
+  </symbol>
+  <symbol id="i-bt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 7l10 10-5 5V2l5 5L7 17"/>
+  </symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-tela-cheia" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/>
+  </symbol>
+  <symbol id="i-sair" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-pulso" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+  <symbol id="i-grafico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 6-7"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+  <symbol id="i-luz" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-ajustes" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+  <symbol id="i-alerta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v5M12 18h0"/></symbol>
+</svg>
+
+<header class="topo">
+  <div class="marca">
+    <div class="marca-icone" aria-hidden="true"><svg><use href="#i-marca"/></svg></div>
+    <div>
+      <h1>Sensor de Ré</h1>
+      <p>BitDogLab · VL53L0X · painel por Bluetooth · versão 6</p>
+    </div>
+  </div>
+  <div class="status" id="status" data-estado="" role="status" aria-live="polite">
+    <span class="status-ponto"></span><span id="status-texto">Desconectado</span><b id="status-placa"></b>
+  </div>
+  <div class="acoes">
+    <button class="botao primario" id="btn-conectar"><svg><use href="#i-bt"/></svg><span id="btn-conectar-texto">Conectar</span></button>
+    <button class="botao" id="btn-simular"><svg id="ico-simular"><use href="#i-play"/></svg><span class="texto-opcional" id="btn-simular-texto">Simular</span></button>
+    <button class="botao quadrado" id="btn-apresentacao" title="Modo apresentação (tela cheia)" aria-label="Modo apresentação"><svg><use href="#i-tela-cheia"/></svg></button>
+  </div>
+  <button class="botao quadrado sair-apresentacao" id="btn-sair" title="Sair do modo apresentação (Esc)" aria-label="Sair do modo apresentação"><svg><use href="#i-sair"/></svg></button>
+</header>
+
+<main>
+  <div class="coluna">
+    <div>
+      <div class="aparelho">
+        <div class="tela"><canvas id="oled" width="1024" height="512" aria-label="Display da placa"></canvas></div>
+        <div class="aparelho-pe"><span><i></i>OLED 128 × 64</span><span id="aparelho-placa">—</span></div>
+      </div>
+      <div class="aviso" id="aviso-bt" hidden><svg width="18" height="18"><use href="#i-alerta"/></svg><span id="aviso-texto"></span></div>
+    </div>
+
+    <section class="cartao so-normal" aria-labelledby="t-hist">
+      <div class="cartao-topo">
+        <span class="rotulo" id="t-hist"><svg><use href="#i-grafico"/></svg>Distância nos últimos 30 s</span>
+        <span class="dica">faixas = zonas</span>
+      </div>
+      <div class="grafico">
+        <canvas id="historico"></canvas>
+        <div class="vazio" id="hist-vazio"><span>O gráfico aparece quando chegarem dados.<br>Conecte a placa ou clique em <b>Simular</b>.</span></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="coluna">
+    <section class="cartao" id="cartao-telemetria" aria-labelledby="t-tele">
+      <h2 class="sr" id="t-tele">Leitura</h2>
+      <div class="leitura-modo" id="leitura-modo">Modo ré</div>
+      <div class="leitura-num"><span id="leitura-valor" class="sem-valor">–</span><span id="leitura-unidade"></span></div>
+      <div id="leitura-zona">Aguardando a placa</div>
+      <div id="leitura-sub">Conecte a placa ou use a simulação.</div>
+
+      <div class="regua" aria-hidden="true">
+        <div class="regua-faixa"><span id="f-livre"></span><span id="f-atencao"></span><span id="f-perigo"></span><span id="f-pare"></span></div>
+        <div class="regua-trilho"><div class="marcador" id="marcador" style="opacity:0"></div></div>
+        <div class="regua-escala" id="regua-escala"></div>
+      </div>
+
+      <dl class="metricas so-normal">
+        <div class="metrica"><dt>Limite</dt><dd id="m-limite">—</dd></div>
+        <div class="metrica"><dt>Pacotes/s</dt><dd id="m-taxa">—</dd></div>
+        <div class="metrica"><dt>Perdidos</dt><dd id="m-perdidos">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="cartao so-normal" aria-labelledby="t-luzes">
+      <div class="cartao-topo"><span class="rotulo" id="t-luzes"><svg><use href="#i-luz"/></svg>Matriz 5×5 e LED RGB</span></div>
+      <div class="luzes">
+        <div class="placa-matriz" id="matriz" aria-label="Matriz de LEDs"></div>
+        <div>
+          <div class="led-linha"><span class="led-rgb" id="led"></span>
+            <div class="luzes-texto"><small>LED RGB</small><b id="luzes-zona">—</b></div>
+          </div>
+          <p class="dica" style="margin:14px 0 0">A barra sobe conforme o objeto se aproxima e pisca na zona PARE.</p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<div class="colunas">
+  <section aria-labelledby="t-conexao">
+    <h2 id="t-conexao">Conexão</h2>
+    <dl class="dados">
+      <dt>Placa</dt><dd id="c-placa">—</dd>
+      <dt>Limite de parada</dt><dd id="c-limite">—</dd>
+      <dt>Pacotes por segundo</dt><dd id="c-taxa">—</dd>
+      <dt>Pacotes perdidos</dt><dd id="c-perdidos">—</dd>
+      <dt>Último pacote</dt><dd id="c-idade">—</dd>
+    </dl>
+  </section>
+  <section aria-labelledby="t-pref">
+    <h2 id="t-pref">Preferências</h2>
+    <div class="opcao">
+      <span>Som no computador</span>
+      <label class="chave"><input type="checkbox" id="chk-som" aria-label="Som no computador"><i></i></label>
+    </div>
+    <div class="opcao">
+      <span>Cor do display</span>
+      <div class="escolha" id="sel-cor" role="group" aria-label="Cor do display">
+        <button data-cor="azul">Azul</button><button data-cor="branco">Branco</button><button data-cor="duas">Bicolor</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<footer><div>
+  <span>Projeto didático · BitDogLab + VL53L0X</span>
+  <span>Painel v6 · funciona sem internet</span>
+</div></footer>
+
+<!-- =====================================================================
+     RENDERIZADOR — porte de lib/display.py. Não usa nada do navegador
+     (só desenha num buffer 128x64), então também roda no Node para
+     comparar com a imagem real capturada da placa.
+     ===================================================================== -->
+<script id="renderizador">
+"use strict";
+const LARGURA = 128, ALTURA = 64, MARGEM = 4;
+const Y_LINHA_TOPO = 18, X_ICONE_MODO = MARGEM, X_ICONE_SOM = LARGURA - MARGEM - 16;
+const X_ICONE_BLE = X_ICONE_SOM - 18;
+const Y_DIGITOS = 21, DIG_LARGURA = 14, DIG_ALTURA = 22, DIG_ESPESSURA = 3, DIG_ESPACO = 3;
+const CENA_X = 74, CENA_FIM = LARGURA - MARGEM, Y_CHAO = Y_DIGITOS + DIG_ALTURA - 1;
+const PAREDE_LARGURA = 6, Y_ZONA = 48, Y_BARRA = 58, BARRA_ALTURA = 6;
+const SEGMENTOS = 10, SEG_LARGURA = 10, SEG_ESPACO = 2;
+const DISTANCIA_CENA_CM = 100;     // = config.DISPLAY_CENA_CM
+const TRENA_X0 = Math.floor((LARGURA - (3 * (DIG_LARGURA + DIG_ESPACO) + 6 + DIG_LARGURA + 3 + 16)) / 2);
+const Y_MM = 46, REGUA_X0 = MARGEM, REGUA_LARGURA = LARGURA - 2 * MARGEM, Y_REGUA = 63, TRENA_MAX_MM = 2000;
+const JANELA_X = 14, JANELA_Y = 20, JANELA_L = 100, JANELA_A = 38;
+const PARE = 3;
+const NOME_EXIBIDO = ["LIVRE", "ATENÇÃO", "PERIGO", "PARE"];
+
+// Fonte 8x8 do MicroPython (ASCII 32..126), extraída da própria placa.
+const FONTE_HEX =
+  "0000000000000000181818180000180066666600000000006666ff66ff666600183e603c067c180062660c1830664600" +
+  "3c663c3867663f00060c1800000000000c18303030180c0030180c0c0c18300000663cff3c6600000018187e18180000" +
+  "00000000001818300000007e0000000000000000001818000003060c183060003c666e7666663c001818381818187e00" +
+  "3c66060c30607e003c66061c06663c00060e1e667f0606007e607c0606663c003c66607c66663c007e660c1818181800" +
+  "3c66663c66663c003c66663e06663c00000018000018000000001800001818300e18306030180e0000007e007e000000" +
+  "70180c060c1870003c66060c180018003c666e6e60623c00183c667e666666007c66667c66667c003c66606060663c00" +
+  "786c6666666c78007e60607860607e007e606078606060003c66606e66663c006666667e666666003c18181818183c00" +
+  "1e0c0c0c0c6c3800666c7870786c66006060606060607e0063777f6b6363630066767e7e6e6666003c66666666663c00" +
+  "7c66667c606060003c666666663c0e007c66667c786c66003c66603c06663c007e181818181818006666666666663c00" +
+  "66666666663c18006363636b7f77630066663c183c6666006666663c181818007e060c1830607e003c30303030303c00" +
+  "006030180c0603003c0c0c0c0c0c3c0000183c6600000000000000000000ffff30180c000000000000003c063e663e00" +
+  "60607c6666667c0000003c6660663c0006063e6666663e0000003c667e603e001c3630783030300000003e66663e067c" +
+  "60607c66666666001800181818181800060006060606663c6060666c787c66003818181818183c00000063777f6b6300" +
+  "00007c666666660000003c6666663c0000007c66667c606000003e66663e060600007c666060600000003c603c067c00" +
+  "3030fc3030361c000000666666663c0000006666663c18000000636b7f3622000000663c183c660000006666663e067c" +
+  "00007e0c18307e000e18187018180e0018181818181818187018180e181870003b6e000000000000";
+const FONTE = new Uint8Array(FONTE_HEX.length / 2);
+for (let i = 0; i < FONTE.length; i++) FONTE[i] = parseInt(FONTE_HEX.substr(i * 2, 2), 16);
+
+// Um "framebuffer" monocromático com as mesmas operações do framebuf.
+class FB {
+  constructor(w, h) { this.w = w; this.h = h; this.p = new Uint8Array(w * h); }
+  pixel(x, y, c) {
+    const dentro = x >= 0 && y >= 0 && x < this.w && y < this.h;
+    if (c === undefined) return dentro ? this.p[y * this.w + x] : 0;
+    if (dentro) this.p[y * this.w + x] = c;
+  }
+  fill(c) { this.p.fill(c); }
+  fill_rect(x, y, w, h, c) {
+    const x0 = Math.max(0, x), x1 = Math.min(this.w, x + w);
+    const y0 = Math.max(0, y), y1 = Math.min(this.h, y + h);
+    for (let j = y0; j < y1; j++) for (let i = x0; i < x1; i++) this.p[j * this.w + i] = c;
+  }
+  hline(x, y, w, c) { this.fill_rect(x, y, w, 1, c); }
+  vline(x, y, h, c) { this.fill_rect(x, y, 1, h, c); }
+  rect(x, y, w, h, c) {
+    this.hline(x, y, w, c); this.hline(x, y + h - 1, w, c);
+    this.vline(x, y, h, c); this.vline(x + w - 1, y, h, c);
+  }
+  blit(src, x, y, key = -1) {
+    for (let j = 0; j < src.h; j++) for (let i = 0; i < src.w; i++) {
+      const v = src.p[j * src.w + i];
+      if (v !== key) this.pixel(x + i, y + j, v);
+    }
+  }
+  text(s, x, y, c = 1) {
+    for (const ch of s) {
+      let code = ch.charCodeAt(0);
+      if (code < 32 || code > 126) code = 63;          // '?'
+      const base = (code - 32) * 8;
+      for (let r = 0; r < 8; r++) {
+        const linha = FONTE[base + r];
+        for (let b = 0; b < 8; b++) if (linha & (0x80 >> b)) this.pixel(x + b, y + r, c);
+      }
+      x += 8;
+    }
+  }
+}
+
+// Ícones 16x16 — a MESMA arte de lib/display.py.
+const ARTE = {
+  modoRe: [".##############.", "#..............#", "#...######.....#", "#...##...##....#",
+           "#...##....##...#", "#...##....##...#", "#...##...##....#", "#...######.....#",
+           "#...##.##......#", "#...##..##.....#", "#...##...##....#", "#...##....##...#",
+           "#...##.....##..#", "#...##......##.#", "#..............#", ".##############."],
+  somLigado: ["................", "......#.........", ".....##.....#...", "....###..#...#..",
+              ".######...#...#.", ".######...#...#.", ".######....#..#.", ".######....#..#.",
+              ".######....#..#.", ".######...#...#.", ".######...#...#.", "....###..#...#..",
+              ".....##.....#...", "......#.........", "................", "................"],
+  somMudo: ["................", "......#.........", ".....##.........", "....###.........",
+            ".######.........", ".######..#...#..", ".######...#.#...", ".######....#....",
+            ".######...#.#...", ".######..#...#..", ".######.........", "....###.........",
+            ".....##.........", "......#.........", "................", "................"],
+  ble: ["................", ".......#........", ".......##.......", ".......#.#......",
+        "...#...#..#.....", "....#..#.#......", ".....#.##.......", "......##........",
+        ".....#.##.......", "....#..#.#......", "...#...#..#.....", ".......#.#......",
+        ".......##.......", ".......#........", "................", "................"],
+  trena: ["................", "................", "................", "################",
+          "#..............#", "#.#.#.#.#.#.#..#", "#.#.#.#.#.#.#..#", "#.#...#...#....#",
+          "#.#...#...#....#", "#..............#", "#..............#", "################",
+          "................", "................", "................", "................"],
+  congelado: ["................", ".......#........", "......###.......", "...#...#...#....",
+              "....#..#..#.....", ".....#.#.#......", "..#...###...#...", ".#############..",
+              "..#...###...#...", ".....#.#.#......", "....#..#..#.....", "...#...#...#....",
+              "......###.......", ".......#........", "................", "................"],
+  carro: ["................", "................", "................", "................",
+          "................", "....#######.....", "...#...#...#....", "..#....#....#...",
+          ".##############.", "################", "################", "################",
+          "..####....####..", "..####....####..", "...##......##...", "................"],
+};
+function icone(arte) {
+  const f = new FB(16, 16);
+  arte.forEach((linha, y) => { for (let x = 0; x < 16; x++) if (linha[x] === "#") f.pixel(x, y, 1); });
+  return f;
+}
+const ICONE = {};
+for (const k in ARTE) ICONE[k] = icone(ARTE[k]);
+
+// Acentos desenhados à mão (a fonte só tem ASCII).
+const BASE = { "É": "E", "Ê": "E", "Á": "A", "Ã": "A", "Ó": "O", "Õ": "O", "Í": "I", "Ú": "U", "Ç": "C" };
+const AGUDO = [[3, -2], [4, -3]], CIRC = [[2, -2], [3, -3], [4, -2]];
+const TIL = [[1, -2], [2, -3], [3, -2], [4, -3]], CEDILHA = [[3, 7], [4, 8]];
+const ACENTOS = { "É": AGUDO, "Á": AGUDO, "Ó": AGUDO, "Í": AGUDO, "Ú": AGUDO, "Ê": CIRC, "Ã": TIL, "Õ": TIL, "Ç": CEDILHA };
+function texto(fb, s, x, y, cor = 1) {
+  for (const ch of s) {
+    fb.text(BASE[ch] || ch, x, y, cor);
+    for (const [dx, dy] of (ACENTOS[ch] || [])) fb.pixel(x + dx, y + dy, cor);
+    x += 8;
+  }
+}
+function textoCentralizado(fb, s, y, cor = 1) {
+  texto(fb, s, Math.floor((LARGURA - 8 * [...s].length) / 2), y, cor);
+}
+function textoAmpliado(s, escala) {
+  const n = [...s].length, altP = 12;
+  const p = new FB(n * 8, altP);
+  texto(p, s, 0, 3);
+  const g = new FB(n * 8 * escala, altP * escala);
+  for (let py = 0; py < altP; py++) for (let px = 0; px < n * 8; px++)
+    if (p.pixel(px, py)) g.fill_rect(px * escala, py * escala, escala, escala, 1);
+  return g;
+}
+
+// Dígitos grandes de 7 segmentos (mesma geometria do OLED).
+const SEGS = { "0": "abcdef", "1": "bc", "2": "abged", "3": "abgcd", "4": "fgbc", "5": "afgcd",
+               "6": "afgedc", "7": "abc", "8": "abcdefg", "9": "abcdfg", "-": "g", " ": "" };
+function digitoGrande(fb, ch, x, y, cor = 1) {
+  const w = DIG_LARGURA, h = DIG_ALTURA, t = DIG_ESPESSURA, meio = Math.floor((h - t) / 2);
+  const s = SEGS[ch] || "";
+  if (s.includes("a")) fb.fill_rect(x, y, w, t, cor);
+  if (s.includes("d")) fb.fill_rect(x, y + h - t, w, t, cor);
+  if (s.includes("g")) fb.fill_rect(x, y + meio, w, t, cor);
+  if (s.includes("f")) fb.fill_rect(x, y, t, meio + t, cor);
+  if (s.includes("b")) fb.fill_rect(x + w - t, y, t, meio + t, cor);
+  if (s.includes("e")) fb.fill_rect(x, y + meio, t, h - meio, cor);
+  if (s.includes("c")) fb.fill_rect(x + w - t, y + meio, t, h - meio, cor);
+  for (const [cx, cy] of [[x, y], [x + w - 1, y], [x, y + h - 1], [x + w - 1, y + h - 1]]) fb.pixel(cx, cy, 0);
+}
+const GLIFOS = {};
+for (const ch of "0123456789-") { const g = new FB(DIG_LARGURA, DIG_ALTURA); digitoGrande(g, ch, 0, 0); GLIFOS[ch] = g; }
+function numeroGrande(fb, valor, x, y, casas = 3) {
+  let s = valor === null ? "-".repeat(casas) : String(valor).slice(-casas);
+  s = " ".repeat(casas - s.length) + s;
+  for (const ch of s) { if (ch !== " ") fb.blit(GLIFOS[ch], x, y); x += DIG_LARGURA + DIG_ESPACO; }
+  return x;
+}
+
+function fundoRe(mudo) {
+  const fb = new FB(LARGURA, ALTURA);
+  fb.blit(ICONE.modoRe, X_ICONE_MODO, 0);
+  texto(fb, "MODO RÉ", X_ICONE_MODO + 20, 5);
+  fb.blit(mudo ? ICONE.somMudo : ICONE.somLigado, X_ICONE_SOM, 0);
+  fb.hline(0, Y_LINHA_TOPO, LARGURA, 1);
+  const px = CENA_FIM - PAREDE_LARGURA, topo = Y_DIGITOS;
+  fb.rect(px, topo, PAREDE_LARGURA, Y_CHAO - topo + 1, 1);
+  let i = 0;
+  for (let y = topo + 4; y < Y_CHAO; y += 4, i++) {
+    fb.hline(px, y, PAREDE_LARGURA, 1);
+    fb.vline(px + (i % 2 ? 2 : 4), y - 3, 3, 1);
+  }
+  fb.hline(CENA_X, Y_CHAO, CENA_FIM - CENA_X, 1);
+  return fb;
+}
+const FUNDO_RE = { false: fundoRe(false), true: fundoRe(true) };
+
+// estado = { cm (número ou null), zona (0..3), segmentos (0..10), mudo, ble }
+function desenharRe(e) {
+  const fb = new FB(LARGURA, ALTURA);
+  fb.p.set(FUNDO_RE[!!e.mudo].p);
+  if (e.ble) fb.blit(ICONE.ble, X_ICONE_BLE, 0);
+  const x = numeroGrande(fb, e.cm, MARGEM, Y_DIGITOS);
+  if (e.cm !== null) fb.text("cm", x, Y_DIGITOS + DIG_ALTURA - 8, 1);
+  // carro
+  const px = CENA_FIM - PAREDE_LARGURA, folgaMax = px - 1 - 16 - CENA_X;
+  const folga = (e.cm === null || e.cm >= DISTANCIA_CENA_CM) ? folgaMax
+              : Math.floor(folgaMax * Math.max(e.cm, 0) / DISTANCIA_CENA_CM);
+  fb.blit(ICONE.carro, px - 1 - 16 - folga, Y_CHAO - 15, 0);
+  // zona
+  const nome = NOME_EXIBIDO[e.zona];
+  if (e.zona === PARE) {
+    const larg = 8 * [...nome].length + 8;
+    fb.fill_rect(Math.floor((LARGURA - larg) / 2), Y_ZONA - 2, larg, 11, 1);
+    textoCentralizado(fb, nome, Y_ZONA, 0);
+  } else {
+    textoCentralizado(fb, nome, Y_ZONA);
+  }
+  // barra segmentada
+  const total = SEGMENTOS * SEG_LARGURA + (SEGMENTOS - 1) * SEG_ESPACO;
+  let bx = Math.floor((LARGURA - total) / 2);
+  for (let i = 0; i < SEGMENTOS; i++) {
+    if (i < e.segmentos) fb.fill_rect(bx, Y_BARRA, SEG_LARGURA, BARRA_ALTURA, 1);
+    else fb.rect(bx, Y_BARRA, SEG_LARGURA, BARRA_ALTURA, 1);
+    bx += SEG_LARGURA + SEG_ESPACO;
+  }
+  if (e.ajuste !== null && e.ajuste !== undefined) janelaAjuste(fb, e.ajuste);
+  return fb;
+}
+
+function janelaAjuste(fb, limiteCm) {       // = Painel._janela_ajuste()
+  const x = JANELA_X, y = JANELA_Y, w = JANELA_L, h = JANELA_A;
+  fb.fill_rect(x, y, w, h, 0);
+  fb.rect(x, y, w, h, 1);
+  textoCentralizado(fb, "LIMITE PARE", y + 3);
+  const larguraNum = 2 * (DIG_LARGURA + DIG_ESPACO) + 16;
+  const xn = numeroGrande(fb, limiteCm, Math.floor((LARGURA - larguraNum) / 2), y + 13, 2);
+  fb.text("cm", xn, y + 13 + DIG_ALTURA - 8, 1);
+  for (const cx of [x + 12, x + w - 13])
+    for (let i = 0; i < 4; i++) {
+      fb.hline(cx - i, y + 16 + i, 2 * i + 1, 1);
+      fb.hline(cx - i, y + 29 - i, 2 * i + 1, 1);
+    }
+}
+
+function fundoTrena() {                     // = Painel._desenhar_fundo_trena()
+  const fb = new FB(LARGURA, ALTURA);
+  fb.blit(ICONE.trena, X_ICONE_MODO, 0);
+  texto(fb, "TRENA", X_ICONE_MODO + 20, 5);
+  fb.hline(0, Y_LINHA_TOPO, LARGURA, 1);
+  fb.hline(REGUA_X0, Y_REGUA, REGUA_LARGURA, 1);
+  for (let cm = 0; cm <= TRENA_MAX_MM / 10; cm += 10) {
+    const x = REGUA_X0 + Math.floor(cm * 10 * (REGUA_LARGURA - 1) / TRENA_MAX_MM);
+    const altura = cm % 50 === 0 ? 5 : 2;
+    fb.vline(x, Y_REGUA - altura, altura, 1);
+  }
+  return fb;
+}
+const FUNDO_TRENA = fundoTrena();
+
+// estado = { mm (número ou null), congelado, ble }
+function desenharTrena(e) {                 // = Painel._desenhar_trena()
+  const fb = new FB(LARGURA, ALTURA);
+  fb.p.set(FUNDO_TRENA.p);
+  if (e.ble) fb.blit(ICONE.ble, X_ICONE_BLE, 0);
+  if (e.congelado) fb.blit(ICONE.congelado, X_ICONE_SOM, 0);
+  let x = numeroGrande(fb, e.mm === null ? null : Math.floor(e.mm / 10), TRENA_X0, Y_DIGITOS);
+  if (e.mm !== null) {
+    fb.fill_rect(x, Y_DIGITOS + DIG_ALTURA - 4, 3, 4, 1);
+    fb.pixel(x, Y_DIGITOS + DIG_ALTURA, 1);
+    x += 6;
+    fb.blit(GLIFOS[String(e.mm % 10)], x, Y_DIGITOS);
+    fb.text("cm", x + DIG_LARGURA + 3, Y_DIGITOS + DIG_ALTURA - 8, 1);
+  }
+  const linha = e.mm === null ? "sem alvo" : e.mm + " mm";
+  if (e.congelado) {
+    const larg = 8 * linha.length + 8;
+    fb.fill_rect(Math.floor((LARGURA - larg) / 2), Y_MM - 2, larg, 10, 1);
+    textoCentralizado(fb, linha, Y_MM, 0);
+  } else textoCentralizado(fb, linha, Y_MM);
+  if (e.mm !== null) {
+    const xm = REGUA_X0 + Math.floor(Math.min(e.mm, TRENA_MAX_MM) * (REGUA_LARGURA - 1) / TRENA_MAX_MM);
+    for (let i = 0; i < 3; i++) fb.hline(xm - 2 + i, Y_REGUA - 8 + i, 5 - 2 * i, 1);
+  }
+  return fb;
+}
+
+function mensagem(titulo, linhas) {
+  const fb = new FB(LARGURA, ALTURA);
+  fb.fill_rect(0, 0, LARGURA, 13, 1);
+  textoCentralizado(fb, titulo, 3, 0);
+  linhas.slice(0, 4).forEach((l, i) => textoCentralizado(fb, l, 18 + i * 11));
+  return fb;
+}
+
+// Abertura: quadro q de 0 a ABERTURA_QUADROS (igual a Painel.abertura()).
+const ABERTURA_QUADROS = 40;
+const TITULO1 = textoAmpliado("SENSOR", 2), TITULO2 = textoAmpliado("DE RÉ", 2);
+function quadroAbertura(q) {
+  const fb = new FB(LARGURA, ALTURA), chao = 58;
+  const paredeX = LARGURA - MARGEM - PAREDE_LARGURA;
+  const sobe = (10 - Math.min(q, 10)) * 4;
+  fb.blit(TITULO1, Math.floor((LARGURA - TITULO1.w) / 2), -4 - sobe, 0);
+  fb.blit(TITULO2, Math.floor((LARGURA - TITULO2.w) / 2), 18 - sobe, 0);
+  fb.hline(0, chao, LARGURA, 1);
+  fb.rect(paredeX, chao - 16, PAREDE_LARGURA, 17, 1);
+  for (let y = chao - 12; y < chao; y += 4) fb.hline(paredeX, y, PAREDE_LARGURA, 1);
+  const fim = paredeX - 16 - 9;
+  const x = -16 + Math.floor((fim + 16) * q / ABERTURA_QUADROS);
+  fb.blit(ICONE.carro, x, chao - 15, 0);
+  if (q > ABERTURA_QUADROS - 12 && q % 4 < 2)
+    for (const r of [2, 5]) fb.vline(x + 16 + r, chao - 11 + Math.floor(r / 2), 7 - r, 1);
+  return fb;
+}
+
+if (typeof module !== "undefined") module.exports = { FB, desenharRe, desenharTrena, mensagem, quadroAbertura, ABERTURA_QUADROS };
+</script>
+
+<!-- =====================================================================
+     INTERFACE: Bluetooth, telemetria, gráfico, luzes, som e simulação.
+     ===================================================================== -->
+<script>
+"use strict";
+// Mesmos identificadores de lib/ble_painel.py
+const UUID_SERVICO = "23b6a012-f842-4df0-bd04-a1d17ce01e5e";
+const UUID_ESTADO = "3c9a3b43-00e0-4d1b-bbe9-5a45f10e791b";
+const SEM_ALVO = 0xFFFF;
+const MODO_TRENA = 1;
+const NOMES_ZONAS = ["LIVRE", "ATENÇÃO", "PERIGO", "PARE"];
+const COR_CSS_ZONA = ["#22c55e", "#facc15", "#fb923c", "#ef4444"];
+const LIMITE_PERIGO_CM = 50, LIMITE_ATENCAO_CM = 100;   // = config.py
+const ESCALA_MAX_CM = 150;                              // régua e gráfico: 0..150 cm
+const HISTORICO_MS = 30000;
+
+// Cores de cores.py (o tom). Na tela, o brilho é realçado para parecer LED.
+const COR_DA_ZONA = [[0, 40, 12], [40, 32, 0], [45, 15, 0], [50, 0, 4]];
+const TRANSICAO_MS = 150, PISCA_MS = 200;               // = config.py
+const SOM = { freq: 2000, bipeMs: 80, maxMs: 1000, minMs: 150 };
+
+const $ = (id) => document.getElementById(id);
+// Escreve o mesmo texto em vários elementos (ex.: nome da placa no display e em Conexão).
+const escrever = (texto, ...ids) => { for (const id of ids) { const el = $(id); if (el) el.textContent = texto; } };
+const parametros = new URLSearchParams(location.search);
+
+// ================================================================== OLED
+const canvas = $("oled"), ctx = canvas.getContext("2d");
+const PALETAS = {
+  azul:   { liga: "#8ad4ff", brilho: "rgba(127,208,255,.55)" },
+  branco: { liga: "#f1f6ff", brilho: "rgba(241,246,255,.45)" },
+  duas:   { liga: "#5cc8ff", topo: "#ffd23f", brilho: "rgba(92,200,255,.5)" },
+};
+let paleta = "azul";
+try { paleta = localStorage.getItem("oled-cor") || "azul"; } catch (e) {}
+if (!PALETAS[paleta]) paleta = "azul";
+
+function marcarPaleta() {
+  for (const b of $("sel-cor").querySelectorAll("button"))
+    b.setAttribute("aria-pressed", String(b.dataset.cor === paleta));
+  canvas.style.setProperty("--brilho-oled", PALETAS[paleta].brilho);
+}
+$("sel-cor").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  paleta = b.dataset.cor;
+  try { localStorage.setItem("oled-cor", paleta); } catch (e) {}
+  marcarPaleta();
+  pintarOLED(ultimoQuadro);
+});
+marcarPaleta();
+
+let ultimoQuadro = null;
+function pintarOLED(fb) {
+  if (!fb) return;
+  ultimoQuadro = fb;
+  // Pixels inteiros, sem espaço entre eles: ao reduzir o canvas, uma grade de
+  // 1 px vira listras (moiré). O brilho em volta vem do CSS (drop-shadow).
+  const p = PALETAS[paleta], esc = canvas.width / LARGURA, lado = esc;
+  ctx.fillStyle = "#020305";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let y = 0; y < ALTURA; y++) {
+    ctx.fillStyle = (p.topo && y < 16) ? p.topo : p.liga;
+    for (let x = 0; x < LARGURA; x++)
+      if (fb.p[y * LARGURA + x]) ctx.fillRect(x * esc, y * esc, lado, lado);
+  }
+}
+
+// ======================================================= matriz e LED RGB
+const celulas = [];
+for (let i = 0; i < 25; i++) { const c = document.createElement("i"); $("matriz").appendChild(c); celulas.push(c); }
+
+class Transicao {                       // = TransicaoCor de cores.py
+  constructor() { this.de = [0, 0, 0]; this.para = [0, 0, 0]; this.t0 = 0; }
+  alvo(cor, agora) {
+    if (cor.join() === this.para.join()) return;
+    this.de = this.cor(agora); this.para = cor; this.t0 = agora;
+  }
+  cor(agora) {
+    const f = Math.min(1, (agora - this.t0) / TRANSICAO_MS);
+    return this.de.map((v, i) => v + (this.para[i] - v) * f);
+  }
+}
+const corMatriz = new Transicao(), corLed = new Transicao();
+
+function realcar(cor, nivel) {           // LED fraco de verdade -> cor viva na tela
+  const m = Math.max(...cor) || 1;
+  return `rgb(${cor.map((v) => Math.round(v / m * 255 * nivel)).join(",")})`;
+}
+
+let estado = null;                       // último estado recebido (ou simulado)
+let inicioPisca = 0, piscava = false;
+
+function pintarLuzes(agora) {
+  if (!estado) {
+    for (const c of celulas) { c.style.background = ""; c.style.boxShadow = ""; }
+    $("led").style.removeProperty("--cor-led"); $("led").style.removeProperty("--brilho-led");
+    return;
+  }
+  const zona = estado.zona, prox = estado.proximidade;
+  corMatriz.alvo(COR_DA_ZONA[zona], agora);
+  corLed.alvo(COR_DA_ZONA[zona], agora);
+  const pisca = zona === PARE && estado.modo !== MODO_TRENA;   // trena não pisca
+  if (pisca && !piscava) inicioPisca = agora;
+  piscava = pisca;
+  const aceso = !pisca || Math.floor((agora - inicioPisca) / PISCA_MS) % 2 === 0;
+  const cor = corMatriz.cor(agora), altura = 1 + prox * 4;
+  for (let linha = 0; linha < 5; linha++) {
+    const nivel = aceso ? Math.max(0, Math.min(1, altura - (4 - linha))) : 0;
+    for (let col = 0; col < 5; col++) {
+      const c = celulas[linha * 5 + col];
+      if (nivel > 0) {
+        const css = realcar(cor, 0.3 + 0.7 * nivel);
+        c.style.background = css;
+        c.style.boxShadow = `0 0 ${4 + 12 * nivel}px ${css}, inset 0 0 4px rgba(255,255,255,.35)`;
+      } else { c.style.background = ""; c.style.boxShadow = ""; }
+    }
+  }
+  const cl = realcar(corLed.cor(agora), 1);
+  $("led").style.setProperty("--cor-led", cl);
+  $("led").style.setProperty("--brilho-led", cl);
+}
+
+// ============================================= som (opcional, = som.py)
+let audio = null, ganho = null, inicioBipe = null, somLigado = false;
+$("chk-som").addEventListener("change", (ev) => {
+  somLigado = ev.target.checked;
+  if (somLigado && !audio) {
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audio.createOscillator(); osc.type = "square"; osc.frequency.value = SOM.freq;
+    ganho = audio.createGain(); ganho.gain.value = 0;
+    osc.connect(ganho).connect(audio.destination); osc.start();
+  }
+  if (audio) audio.resume();
+});
+function tocarSom(agora) {
+  if (!ganho) return;
+  let ligado = false;
+  if (somLigado && estado && !estado.mudo && estado.zona !== 0 && estado.modo !== MODO_TRENA) {
+    if (estado.zona === PARE) ligado = true;
+    else {
+      const intervalo = SOM.maxMs - estado.proximidade * (SOM.maxMs - SOM.minMs);
+      if (inicioBipe === null || agora - inicioBipe >= intervalo) inicioBipe = agora;
+      ligado = agora - inicioBipe < SOM.bipeMs;
+    }
+  } else inicioBipe = null;
+  ganho.gain.setTargetAtTime(ligado ? 0.04 : 0, audio.currentTime, 0.003);
+}
+
+// ============================================== régua das zonas (telemetria)
+let limiteAtual = 20;
+function montarRegua(limite) {
+  // A régua vai de ESCALA_MAX_CM (esquerda, longe) até 0 (direita, perto).
+  const larg = (de, ate) => ((de - ate) / ESCALA_MAX_CM * 100) + "%";
+  $("f-livre").style.flexBasis = larg(ESCALA_MAX_CM, LIMITE_ATENCAO_CM);
+  $("f-atencao").style.flexBasis = larg(LIMITE_ATENCAO_CM, LIMITE_PERIGO_CM);
+  $("f-perigo").style.flexBasis = larg(LIMITE_PERIGO_CM, limite);
+  $("f-pare").style.flexBasis = larg(limite, 0);
+  const pos = (cm) => ((ESCALA_MAX_CM - cm) / ESCALA_MAX_CM * 100) + "%";
+  $("regua-escala").innerHTML = [ESCALA_MAX_CM, LIMITE_ATENCAO_CM, LIMITE_PERIGO_CM, limite, 0]
+    .map((cm) => `<span style="left:${pos(cm)}">${cm === ESCALA_MAX_CM ? cm + " cm" : cm}</span>`).join("");
+}
+montarRegua(limiteAtual);
+
+let marcadorAlvo = null, marcadorPos = null;   // posição em % (suavizada no laço)
+function moverMarcador() {
+  const m = $("marcador");
+  if (marcadorAlvo === null) { m.style.opacity = 0; marcadorPos = null; return; }
+  marcadorPos = marcadorPos === null ? marcadorAlvo : marcadorPos + (marcadorAlvo - marcadorPos) * 0.25;
+  m.style.left = marcadorPos + "%";
+  m.style.opacity = 1;
+}
+
+// ================================================================ gráfico
+const historico = [];                     // { t, cm (ou null), zona }
+const hist = $("historico"), hctx = hist.getContext("2d");
+function ajustarGrafico() {
+  const r = hist.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  hist.width = Math.max(1, Math.round(r.width * dpr));
+  hist.height = Math.max(1, Math.round(r.height * dpr));
+}
+window.addEventListener("resize", ajustarGrafico);
+ajustarGrafico();
+
+function desenharGrafico(agora) {
+  const dpr = window.devicePixelRatio || 1, W = hist.width, H = hist.height;
+  const esq = 34 * dpr, dir = 8 * dpr, cima = 8 * dpr, baixo = 20 * dpr;
+  const gw = W - esq - dir, gh = H - cima - baixo;
+  const y = (cm) => cima + gh * (Math.min(cm, ESCALA_MAX_CM) / ESCALA_MAX_CM);   // 0 em cima = perto
+  const x = (t) => esq + gw * (1 - (agora - t) / HISTORICO_MS);
+  hctx.clearRect(0, 0, W, H);
+  // faixas das zonas
+  const faixas = [[0, limiteAtual, 3], [limiteAtual, LIMITE_PERIGO_CM, 2], [LIMITE_PERIGO_CM, LIMITE_ATENCAO_CM, 1], [LIMITE_ATENCAO_CM, ESCALA_MAX_CM, 0]];
+  for (const [de, ate, z] of faixas) {
+    hctx.fillStyle = COR_CSS_ZONA[z] + "1a";
+    hctx.fillRect(esq, y(de), gw, y(ate) - y(de));
+  }
+  // grade e rótulos
+  hctx.font = `${11 * dpr}px Consolas, monospace`;
+  hctx.fillStyle = "#6b7788"; hctx.strokeStyle = "rgba(255,255,255,.06)"; hctx.lineWidth = dpr;
+  hctx.textAlign = "right"; hctx.textBaseline = "middle";
+  for (const cm of [0, LIMITE_PERIGO_CM, LIMITE_ATENCAO_CM, ESCALA_MAX_CM]) {
+    hctx.beginPath(); hctx.moveTo(esq, y(cm)); hctx.lineTo(esq + gw, y(cm)); hctx.stroke();
+    hctx.fillText(String(cm), esq - 6 * dpr, y(cm));
+  }
+  hctx.textBaseline = "alphabetic";
+  for (const s of [30, 20, 10, 0]) {
+    hctx.textAlign = s === 30 ? "left" : s === 0 ? "right" : "center";
+    hctx.fillText(s ? `-${s}s` : "agora", esq + gw * (1 - s / 30), H - 4 * dpr);
+  }
+  // linha da distância
+  while (historico.length && agora - historico[0].t > HISTORICO_MS + 1000) historico.shift();
+  hctx.save();
+  hctx.beginPath(); hctx.rect(esq, cima, gw, gh); hctx.clip();
+  hctx.lineWidth = 2.2 * dpr; hctx.lineJoin = "round"; hctx.strokeStyle = "#e8edf3";
+  hctx.shadowColor = "rgba(232,237,243,.5)"; hctx.shadowBlur = 8 * dpr;
+  hctx.beginPath();
+  let caneta = false;
+  for (const p of historico) {
+    if (p.cm === null) { caneta = false; continue; }
+    if (!caneta) { hctx.moveTo(x(p.t), y(p.cm)); caneta = true; } else hctx.lineTo(x(p.t), y(p.cm));
+  }
+  hctx.stroke();
+  hctx.restore();
+  const ultimo = historico[historico.length - 1];
+  if (ultimo && ultimo.cm !== null) {
+    hctx.fillStyle = COR_CSS_ZONA[ultimo.zona];
+    hctx.shadowColor = COR_CSS_ZONA[ultimo.zona]; hctx.shadowBlur = 12 * dpr;
+    hctx.beginPath(); hctx.arc(x(ultimo.t), y(ultimo.cm), 4.5 * dpr, 0, Math.PI * 2); hctx.fill();
+    hctx.shadowBlur = 0;
+  }
+  $("hist-vazio").hidden = historico.length > 0;
+}
+
+// ========================================================= estado recebido
+let ultimoRecebido = 0, contaJanela = 0, inicioJanela = performance.now();
+let seqAnterior = null, perdidos = 0, assinaturaTela = "", zonaAnterior = null, ultimoGrafico = 0;
+
+function aplicarEstado(e) {
+  estado = e;
+  const agora = performance.now();
+  ultimoRecebido = agora;
+  contaJanela++;
+
+  // 1) Tela do OLED (só redesenha se mudou)
+  let tela, desenhar;
+  if (e.modo === MODO_TRENA) {
+    tela = { mm: e.mm, congelado: e.congelado, ble: e.ble };
+    desenhar = desenharTrena;
+  } else {
+    const seg = Math.floor(e.proximidade * SEGMENTOS + 0.5);   // = Painel.tela_re()
+    tela = { cm: e.cm, zona: e.zona, segmentos: seg, mudo: e.mudo, ble: e.ble,
+             ajuste: e.ajustando ? e.limite : null };
+    desenhar = desenharRe;
+  }
+  const assinatura = e.modo + JSON.stringify(tela);
+  if (assinatura !== assinaturaTela && !animandoAbertura) {
+    assinaturaTela = assinatura;
+    pintarOLED(desenhar(tela));
+  }
+
+  // 2) Cor da zona na interface inteira
+  if (e.zona !== zonaAnterior) {
+    zonaAnterior = e.zona;
+    document.documentElement.style.setProperty("--zona", COR_CSS_ZONA[e.zona]);
+    for (const [i, id] of ["f-livre", "f-atencao", "f-perigo", "f-pare"].entries())
+      $(id).classList.toggle("ativa", i === e.zona);
+  }
+
+  // 3) Leitura
+  const trena = e.modo === MODO_TRENA;
+  const cmTela = trena ? (e.mm === null ? null : e.mm / 10) : e.cm;   // distância mostrada (cm)
+  $("leitura-modo").textContent = trena ? "Modo trena" : "Modo ré";
+  $("leitura-valor").textContent = cmTela === null ? "–" : (trena ? cmTela.toFixed(1).replace(".", ",") : String(cmTela));
+  $("leitura-valor").classList.toggle("sem-valor", cmTela === null);
+  $("leitura-unidade").textContent = cmTela === null ? "" : "cm";
+  $("leitura-zona").textContent = trena ? (e.congelado ? "Congelada" : "Medindo") : ZONAS_TEXTO[e.zona];
+  $("leitura-sub").textContent = frase(e);
+  $("luzes-zona").textContent = ZONAS_TEXTO[e.zona];
+  if (e.limite && e.limite !== limiteAtual) { limiteAtual = e.limite; montarRegua(limiteAtual); }
+  escrever(e.limite ? e.limite + " cm" : "—", "m-limite", "c-limite");
+  marcadorAlvo = cmTela === null ? null : (ESCALA_MAX_CM - Math.min(cmTela, ESCALA_MAX_CM)) / ESCALA_MAX_CM * 100;
+
+  // 4) Histórico (o gráfico também é redesenhado aqui, e não só no laço de
+  //    animação: assim ele não para se o navegador economizar quadros)
+  historico.push({ t: agora, cm: cmTela, zona: e.zona });
+  if (agora - ultimoGrafico > 33) { ultimoGrafico = agora; desenharGrafico(agora); }
+}
+
+function lerPacote(dv) {           // struct "<BBBHBBBHB" de ble_painel.py
+  const cm = dv.getUint16(3, true), mm = dv.getUint16(8, true), flags = dv.getUint8(6);
+  const seq = dv.getUint8(10);
+  if (seqAnterior !== null) perdidos += (seq - seqAnterior - 1 + 256) % 256;
+  seqAnterior = seq;
+  return {
+    versao: dv.getUint8(0), modo: dv.getUint8(1), zona: dv.getUint8(2),
+    cm: cm === SEM_ALVO ? null : cm, proximidade: dv.getUint8(5) / 255,
+    mudo: !!(flags & 1), congelado: !!(flags & 2), ajustando: !!(flags & 4),
+    limite: dv.getUint8(7), mm: mm === SEM_ALVO ? null : mm, ble: true,
+  };
+}
+
+// ============================================================== Bluetooth
+let dispositivo = null, caracteristica = null, querConectado = false;
+
+function mostrarStatus(estadoCss, texto, placa = "") {
+  $("status").dataset.estado = estadoCss;
+  $("status-texto").textContent = texto;
+  $("status-placa").textContent = placa;
+  document.body.classList.toggle("conectado", estadoCss === "ok" && !!caracteristica);
+}
+function avisar(texto) { $("aviso-bt").hidden = !texto; $("aviso-texto").textContent = texto || ""; }
+
+async function conectar() {
+  if (!navigator.bluetooth) {
+    avisar("Este navegador não tem Web Bluetooth. Abra a página no Google Chrome ou no Microsoft Edge. (O botão Simular funciona em qualquer navegador.)");
+    return;
+  }
+  try {
+    dispositivo = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "SensorDeRe" }], optionalServices: [UUID_SERVICO],
+    });
+  } catch (e) { return; }                               // usuário cancelou
+  dispositivo.addEventListener("gattserverdisconnected", aoDesconectar);
+  querConectado = true;
+  pararSimulacao();
+  await abrirGatt();
+}
+
+async function abrirGatt(tentativa = 1) {
+  mostrarStatus("espera", tentativa > 1 ? `Reconectando (${tentativa})…` : "Conectando…", dispositivo.name || "");
+  try {
+    const servidor = await dispositivo.gatt.connect();
+    const servico = await servidor.getPrimaryService(UUID_SERVICO);
+    caracteristica = await servico.getCharacteristic(UUID_ESTADO);
+    caracteristica.addEventListener("characteristicvaluechanged", (ev) => aplicarEstado(lerPacote(ev.target.value)));
+    await caracteristica.startNotifications();
+    seqAnterior = null; perdidos = 0;
+    aplicarEstado(lerPacote(await caracteristica.readValue()));
+    mostrarStatus("ok", "Conectado", dispositivo.name || "");
+    escrever(dispositivo.name || "SensorDeRe", "c-placa", "aparelho-placa");
+    $("btn-conectar-texto").textContent = "Desconectar";
+    avisar("");
+  } catch (e) {
+    caracteristica = null;
+    if (querConectado && tentativa < 5) setTimeout(() => abrirGatt(tentativa + 1), 1000 * tentativa);
+    else { mostrarStatus("erro", "Falha na conexão"); telaDesconectado(); }
+  }
+}
+
+function aoDesconectar() {
+  caracteristica = null;
+  if (querConectado) abrirGatt(2);                    // caiu sozinho: tenta voltar
+  else { mostrarStatus("", "Desconectado"); telaDesconectado(); }
+}
+
+$("btn-conectar").addEventListener("click", () => {
+  if (dispositivo && dispositivo.gatt.connected) {
+    querConectado = false; dispositivo.gatt.disconnect();
+  } else conectar();
+});
+
+function limparTelemetria() {
+  estado = null; assinaturaTela = ""; zonaAnterior = null; marcadorAlvo = null;
+  document.documentElement.style.setProperty("--zona", "#9a9ea6");
+  for (const id of ["f-livre", "f-atencao", "f-perigo", "f-pare"]) $(id).classList.remove("ativa");
+  $("luzes-zona").textContent = "—";
+  $("leitura-valor").textContent = "–"; $("leitura-valor").classList.add("sem-valor");
+  $("leitura-unidade").textContent = "";
+  $("leitura-zona").textContent = "Aguardando a placa";
+  $("leitura-sub").textContent = "Conecte a placa ou use a simulação.";
+}
+
+// Frase curta que explica o que está acontecendo (abaixo da zona).
+const ZONAS_TEXTO = ["Livre", "Atenção", "Perigo", "Pare"];
+function frase(e) {
+  if (e.modo === MODO_TRENA) {
+    if (e.mm === null) return "Nada à frente do sensor";
+    return e.congelado ? `${e.mm} mm, medida congelada` : `${e.mm} mm`;
+  }
+  if (e.cm === null) return "Nada à frente do sensor";
+  if (e.ajustando) return `Limite de parada ajustado para ${e.limite} cm`;
+  if (e.mudo) return "Som desligado na placa";
+  if (e.zona === 0) return "Sem alerta sonoro";
+  if (e.zona === PARE) return "Som contínuo";
+  return `Bipe a cada ${Math.round(SOM.maxMs - e.proximidade * (SOM.maxMs - SOM.minMs))} ms`;
+}
+
+function telaDesconectado() {
+  limparTelemetria();
+  $("btn-conectar-texto").textContent = "Conectar";
+  escrever("—", "c-placa", "aparelho-placa");
+  if (!animandoAbertura) pintarOLED(mensagem("DESCONECTADO", ["", "Clique em", "CONECTAR"]));
+}
+
+// ============================================================== simulação
+// Um objeto simulado se aproxima e se afasta — para testar sem a placa.
+let simulando = null;
+const ROTEIRO = [[0, 1300], [2500, 1300], [12500, 150], [15500, 150], [17500, 1300], [19500, 1300]];
+function distanciaSimulada(t) {
+  t %= ROTEIRO[ROTEIRO.length - 1][0];
+  for (let i = 0; i < ROTEIRO.length - 1; i++) {
+    const [t0, d0] = ROTEIRO[i], [t1, d1] = ROTEIRO[i + 1];
+    if (t >= t0 && t < t1) return d0 + (d1 - d0) * (t - t0) / (t1 - t0);
+  }
+  return ROTEIRO[0][1];
+}
+function iniciarSimulacao() {
+  const t0 = performance.now();
+  $("btn-simular-texto").textContent = "Parar";
+  $("ico-simular").innerHTML = '<use href="#i-stop"/>';
+  escrever("simulação", "c-placa", "aparelho-placa");
+  mostrarStatus("espera", "Simulando");
+  simulando = setInterval(() => {
+    const mm = Math.round(distanciaSimulada(performance.now() - t0));
+    const zona = mm < 200 ? 3 : mm < 500 ? 2 : mm <= 1000 ? 1 : 0;
+    const prox = mm >= 1000 ? 0 : mm <= 200 ? 1 : (1000 - mm) / 800;
+    aplicarEstado({ modo: 0, zona, cm: Math.round(mm / 10), mm, proximidade: prox, mudo: false,
+                    congelado: false, ajustando: false, limite: 20, ble: false });
+  }, 50);
+}
+function pararSimulacao() {
+  if (!simulando) return;
+  clearInterval(simulando); simulando = null;
+  $("btn-simular-texto").textContent = "Simular";
+  $("ico-simular").innerHTML = '<use href="#i-play"/>';
+  if (!(dispositivo && dispositivo.gatt.connected)) { mostrarStatus("", "Desconectado"); telaDesconectado(); }
+}
+$("btn-simular").addEventListener("click", () => simulando ? pararSimulacao() : iniciarSimulacao());
+
+// ===================================================== modo apresentação
+function entrarApresentacao() {
+  document.body.classList.add("apresentacao");
+  if (document.documentElement.requestFullscreen && !parametros.has("apresentacao"))
+    document.documentElement.requestFullscreen().catch(() => {});
+  setTimeout(ajustarGrafico, 50);
+}
+function sairApresentacao() {
+  document.body.classList.remove("apresentacao");
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  setTimeout(ajustarGrafico, 50);
+}
+$("btn-apresentacao").addEventListener("click", entrarApresentacao);
+$("btn-sair").addEventListener("click", sairApresentacao);
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") sairApresentacao(); });
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement && document.body.classList.contains("apresentacao") && !parametros.has("apresentacao"))
+    sairApresentacao();
+});
+
+// ================================================== abertura e laço
+let animandoAbertura = true;
+(function abertura(q = 0) {
+  pintarOLED(quadroAbertura(q));
+  if (q < ABERTURA_QUADROS) setTimeout(() => abertura(q + 1), 40);
+  else setTimeout(() => {
+    animandoAbertura = false;
+    if (estado) { assinaturaTela = ""; aplicarEstado(estado); } else telaDesconectado();
+  }, 700);
+})();
+
+function laco() {
+  const agora = performance.now();
+  pintarLuzes(agora);
+  tocarSom(agora);
+  moverMarcador();
+  if (agora - ultimoGrafico > 33) { ultimoGrafico = agora; desenharGrafico(agora); }
+  if (agora - inicioJanela >= 1000) {
+    escrever((caracteristica || simulando) ? String(contaJanela) : "—", "m-taxa", "c-taxa");
+    escrever(caracteristica ? String(perdidos) : "—", "m-perdidos", "c-perdidos");
+    contaJanela = 0; inicioJanela = agora;
+  }
+  escrever(ultimoRecebido && (caracteristica || simulando)
+    ? `há ${Math.round(agora - ultimoRecebido)} ms` : "—", "c-idade");
+  requestAnimationFrame(laco);
+}
+requestAnimationFrame(laco);
+
+if (!navigator.bluetooth)
+  avisar("Este navegador não tem Web Bluetooth: use o Google Chrome ou o Microsoft Edge. (O botão Simular funciona em qualquer navegador.)");
+if (parametros.has("apresentacao")) entrarApresentacao();
+if (parametros.has("simular")) iniciarSimulacao();
+</script>
+</body>
+</html>
